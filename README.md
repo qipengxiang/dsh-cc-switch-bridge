@@ -16,7 +16,7 @@ on every model-picker open, so edits made in cc-switch show up without restartin
 
 Rows whose `meta.apiFormat` is anything but `anthropic`, or without a base URL / credential / model,
 are skipped and logged. Codex rows are imported through the built-in pi-ai adapter instead (see
-Settings page); pi/opencode/gemini rows use wire formats nothing in Harness speaks and stay unbridged.
+Settings page); the other tool groups store their own shapes, see "Why some groups are not imported".
 
 ## What it registers
 
@@ -69,7 +69,8 @@ re-syncs immediately — no restart — and the model picker follows.
 | --- | --- |
 | Claude Code / Claude Code Desktop / any Anthropic-format group | the bridge's own adapter, one route per provider |
 | Codex | handed to the built-in `dsh-llm-pi-ai` adapter: one provider per cc-switch Codex row, `api` taken from the row's `wire_api` (`openai-responses` / `openai-completions`), base URL and model catalog straight from the row |
-| pi / opencode / anything else | listed as not importable, cannot be ticked |
+| pi / openclaw / opencode | each stores its own app's config structure and the bridge has no parser for it yet, so they are listed as not importable |
+| gemini | this machine's row is an empty config, so there is nothing to import |
 
 The Codex handoff needs no manual setup: turning it on writes a `codex` entry into the `dsh-llm-pi-ai`
 plugin config in the desktop profile patch (`settingsNs: codex`) and stores each row's key in the
@@ -77,7 +78,22 @@ credential store under `CCSWITCH_CODEX_<row>`. Turning it off again removes both
 secrets the bridge wrote.
 
 The page itself is a browser half (`client.js`) served by this package and talks to the host over
-`/dsh-cc-switch/state` (GET snapshot, POST `{apps: [...]}` selection).
+`/dsh-cc-switch/state` (GET snapshot, POST `{apps, order}` for the selection and its order). The lower
+half of the page lists what is actually live, as "bridged" and "handed to pi-ai".
+
+### Why some groups are not imported
+
+Not a model problem and not a protocol problem: cc-switch stores one config structure per tool, and the
+bridge only parses two of them — `claude` / `claude-desktop` (`env.ANTHROPIC_*`) and `codex` (TOML).
+
+| Group | What cc-switch actually stores | Status |
+| --- | --- | --- |
+| `pi` | `baseUrl` / `api` / `models[]` / `thinkingLevelMap` — pi-ai's own provider shape | fields map almost 1:1, not implemented yet |
+| `openclaw` | `baseUrl` / `api` / `models[]`, also pi-ai-shaped | not implemented yet |
+| `opencode` | AI SDK `{npm, options, models}` (`@ai-sdk/openai-compatible` / `@ai-sdk/anthropic`) | needs a small `npm → api` map, not implemented yet |
+| `gemini` | `{"env":{},"config":{}}` (empty on this machine) | nothing to import |
+
+The first three would ride the same pi-ai handoff once parsed; no Harness change needed.
 
 ## Status file
 
@@ -111,8 +127,9 @@ trusted with images, and quota/capacity errors are reported verbatim.
 
 ## Limits
 
-- Anthropic-compatible groups are converted by the bridge; Codex groups work because the built-in
-  pi-ai adapter already speaks their wire format. pi/opencode/gemini rows are still not bridged.
+- The bridge's own adapter only converts Anthropic-compatible groups; Codex groups are handed to the
+  built-in pi-ai adapter through its config. pi / openclaw / opencode shapes are not parsed yet, and
+  the gemini row has no config at all.
 - Some relays whitelist the calling client by User-Agent (`client_not_allowed`, `仅可用于CC官方客户端`).
   The bridge does not guess a client identity; if the cc-switch row carries
   `ANTHROPIC_CUSTOM_HEADERS` ("Name: value" lines, as Claude Code accepts it), those headers are

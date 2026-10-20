@@ -15,7 +15,8 @@
 cc-switch 里的改动无需重启 Harness 即可生效。
 
 `meta.apiFormat` 不是 `anthropic` 的行，以及缺少 base URL / 凭据 / 模型的行会被跳过并记日志。
-codex 行改由内置 pi-ai 适配器导入（见“设置页面”）；pi / opencode / gemini 行用的是 Harness 没有实现的协议，不桥接。
+codex 行改由内置 pi-ai 适配器导入（见“设置页面”）；其他工具分组各有各的存储格式，见
+“为什么有些分组没接”。
 
 ## 注册什么
 
@@ -65,14 +66,30 @@ Codex 等），勾选哪几个就导入哪几个。改选择后立即重新同�
 | --- | --- |
 | Claude Code / Claude Code Desktop / 任何 Anthropic 格式分组 | 走 bridge 自己的适配器，一个供应商一条路由 |
 | Codex | 交给内置的 `dsh-llm-pi-ai` 适配器：每条 cc-switch Codex 行一个供应商，`api` 取自该行的 `wire_api`（`openai-responses` / `openai-completions`），base URL 和模型目录直接来自该行 |
-| pi / opencode / 其它 | 列为不可导入，无法勾选 |
+| pi / openclaw / opencode | 存储的是各家自己的配置结构，桥还没写对应的解析器，暂列为不可导入 |
+| gemini | 本机这一行是空配置，没有内容可导入 |
 
 Codex 这条路线不需要手工配置：开启时把一条 `codex` 条目写进桌面 profile patch 里的 `dsh-llm-pi-ai`
 插件配置（`settingsNs: codex`），并把每行的 key 存到凭据库的 `CCSWITCH_CODEX_<行名>`；关闭时既移除路由，
 也删除 bridge 写进去的这些密钥。
 
 页面本身是本包提供的浏览器半部（`client.js`），通过 `/dsh-cc-switch/state` 与宿主通信
-（GET 取快照，POST `{apps: [...]}` 提交选择）。
+（GET 取快照，POST `{apps, order}` 提交选择与顺序）。页面下半部分会列出实际生效的
+「已桥接」与「已交给 pi-ai」两份清单，方便核对导入结果。
+
+### 为什么有些分组没接
+
+这不是“模型不行”，也不是协议不支持——是 cc-switch 给每个工具存了不同的配置结构，桥目前只写了
+`claude` / `claude-desktop`（`env.ANTHROPIC_*`）和 `codex`（TOML）两种解析器：
+
+| 分组 | cc-switch 里实际存的 | 状态 |
+| --- | --- | --- |
+| `pi` | `baseUrl` / `api` / `models[]` / `thinkingLevelMap`，就是 pi-ai 自己的 provider 结构 | 字段几乎一一对应，尚未实现 |
+| `openclaw` | `baseUrl` / `api` / `models[]`，同样是 pi-ai 风格 | 尚未实现 |
+| `opencode` | AI SDK 的 `{npm, options, models}`（`@ai-sdk/openai-compatible` / `@ai-sdk/anthropic`） | 需要一张 `npm → api` 映射，尚未实现 |
+| `gemini` | `{"env":{},"config":{}}`（本机这条是空的） | 没有可导入的配置，接不了 |
+
+前三种接上以后同样走 pi-ai 那条路，不需要改 Harness 本身。
 
 ## 排序
 
@@ -105,7 +122,8 @@ profile 是以链接方式安装它的，但运行中的宿主仍持有旧模块
 
 ## 限制
 
-- 只支持 Anthropic 兼容端点；cc-switch 里其他应用的协议不做转换。
+- 桥自己的适配器只处理 Anthropic 兼容端点；Codex 分组通过 pi-ai 配置交给内置适配器。
+  pi / openclaw / opencode 的存储格式尚未解析，gemini 那行本身没有配置。
 - 部分中转按 User-Agent 白名单限制客户端（`client_not_allowed`、`仅可用于CC官方客户端`）。
   桥不伪造客户端身份；如果 cc-switch 条目里带了 `ANTHROPIC_CUSTOM_HEADERS`（每行 `Name: value`，
   与 Claude Code 的写法一致），这些头会原样带上。
