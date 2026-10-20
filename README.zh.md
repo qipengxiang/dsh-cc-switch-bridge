@@ -15,7 +15,7 @@
 cc-switch 里的改动无需重启 Harness 即可生效。
 
 `meta.apiFormat` 不是 `anthropic` 的行，以及缺少 base URL / 凭据 / 模型的行会被跳过并记日志。
-codex / pi / opencode 行用的是别的协议，不做桥接。
+codex 行改由内置 pi-ai 适配器导入（见“设置页面”）；pi / opencode / gemini 行用的是 Harness 没有实现的协议，不桥接。
 
 ## 注册什么
 
@@ -56,6 +56,30 @@ max 32000 —— 当模型自身的输出上限更小时会自动减半。`max_t
 要拉黑或放行某个域名，只需改 `lib/thinking.js` 里的这一行；插件配置 `thinking: false`
 可以整体关掉所有等级菜单。
 
+## 设置页面
+
+设置 → **cc-switch-bridge** 会列出你 cc-switch 里实际配置过的工具分组（Claude Code、Claude Code Desktop、
+Codex 等），勾选哪几个就导入哪几个。改选择后立即重新同步，不用重启，模型选择器随之变化。
+
+| 分组 | 导入方式 |
+| --- | --- |
+| Claude Code / Claude Code Desktop / 任何 Anthropic 格式分组 | 走 bridge 自己的适配器，一个供应商一条路由 |
+| Codex | 交给内置的 `dsh-llm-pi-ai` 适配器：每条 cc-switch Codex 行一个供应商，`api` 取自该行的 `wire_api`（`openai-responses` / `openai-completions`），base URL 和模型目录直接来自该行 |
+| pi / opencode / 其它 | 列为不可导入，无法勾选 |
+
+Codex 这条路线不需要手工配置：开启时把一条 `codex` 条目写进桌面 profile patch 里的 `dsh-llm-pi-ai`
+插件配置（`settingsNs: codex`），并把每行的 key 存到凭据库的 `CCSWITCH_CODEX_<行名>`；关闭时既移除路由，
+也删除 bridge 写进去的这些密钥。
+
+页面本身是本包提供的浏览器半部（`client.js`），通过 `/dsh-cc-switch/state` 与宿主通信
+（GET 取快照，POST `{apps: [...]}` 提交选择）。
+
+## 排序
+
+「已桥接」和「已交给 pi-ai」里的行可以直接拖动排序，保存下来的顺序（状态文件里的 `order`）
+就是路由的注册顺序，也就是模型选择器里的分组顺序。DeepSeek 的 account/official 两组由选择器
+自己固定在最前，不受这里影响。
+
 ## 状态文件
 
 `~/.dsh/dsh-cc-switch-bridge.status.json` —— 每次同步成功后写入：宿主进程实际持有的路由与模型。
@@ -68,11 +92,22 @@ profile 是以链接方式安装它的，但运行中的宿主仍持有旧模块
 
 ## 自检
 
-`node tests/smoke.mjs` —— SSE 解码、错误映射、工具调用修复、`max_tokens` 截断、模型标签，
-以及一次对真实 cc-switch 数据库的读取。
+`node tests/smoke.mjs` —— SSE 解码、错误映射、工具调用修复、`max_tokens` 截断、模型标签、
+排序，以及一次对真实 cc-switch 数据库的读取。
+`node tests/client-render.mjs` —— 用桩 React 把设置页渲染一遍，专抓「hook 顺序错导致页面空白」
+这类问题。
+
+## 测试记录
+
+`tests/MATRIX.md` —— 当前能导入的 26 个供应商组、91 个模型全部实测过一遍：工具调用、工具回传、
+思考等级、图片。简单说：除客户端校验/配额/上游容量问题外，工具调用全线可用；GLM 的 Anthropic
+端点读图不可靠；错误一律按原样报出。
 
 ## 限制
 
 - 只支持 Anthropic 兼容端点；cc-switch 里其他应用的协议不做转换。
-- 不发送图片块；历史里的图片会变成一段占位文字。
+- 部分中转按 User-Agent 白名单限制客户端（`client_not_allowed`、`仅可用于CC官方客户端`）。
+  桥不伪造客户端身份；如果 cc-switch 条目里带了 `ANTHROPIC_CUSTOM_HEADERS`（每行 `Name: value`，
+  与 Claude Code 的写法一致），这些头会原样带上。
+- data URL 形式的图片原样转发；其他形式的附件引用会变成一段占位文字。
 - 插件从不写回 cc-switch，因此 cc-switch 里的「当前供应商」和 Harness 里选择的模型相互独立。

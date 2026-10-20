@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "cc-switch 模型",
+    "title": "cc-switch-bridge",
     "description": "把 cc-switch 里保存的第三方模型接入 DeepSeek Harness，模型选择器里可直接切换。"
   }
 }

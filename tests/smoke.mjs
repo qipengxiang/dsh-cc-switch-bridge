@@ -3,8 +3,13 @@
  * Asserts only; no test framework.
  */
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { decodeStream, encodeRequest, projectMessages } from '../lib/anthropic.js'
-import { loadProviders, splitModelLabel } from '../lib/source.js'
+import { listToolGroups, loadProviders, parseCustomHeaders, readProviderRows, splitModelLabel } from '../lib/source.js'
+import { codexProviders } from '../lib/codex.js'
+import { normalizeApps, readSelection, reorder, statePath, writeSelection } from '../lib/selection.js'
 import { levelIds, reasoningEfforts, replaysWithoutThinking } from '../lib/thinking.js'
 
 let failures = 0
@@ -215,3 +220,97 @@ if (failures > 0) {
 } else {
   console.log('\nall checks passed')
 }
+
+await check('tool groups come from the real cc-switch database', async () => {
+  const groups = await listToolGroups({})
+  if (groups.length === 0) {
+    console.log('     (no cc-switch install on this machine — skipping the group checks)')
+    return
+  }
+  console.log(`     ${groups.map((group) => `${group.appType}:${group.count}/${group.formats.join('+')}`).join(' ')}`)
+  const claude = groups.find((group) => group.appType === 'claude')
+  if (claude) assert.ok(claude.formats.includes('anthropic'), 'claude rows are Anthropic Messages')
+  assert.ok(groups.every((group) => group.label && group.count > 0))
+})
+
+await check('codex rows project into pi-ai providers', async () => {
+  const rows = (await readProviderRows({})).filter((row) => String(row.app_type) === 'codex')
+  if (rows.length === 0) return
+  const providers = codexProviders(rows)
+  console.log(`     ${providers.length}/${rows.length} codex rows usable`)
+  assert.ok(providers.length > 0, 'no codex row projected')
+  for (const provider of providers) {
+    assert.match(provider.route, /^ccswitch-codex-/)
+    assert.match(provider.entry.baseURL, /^https?:\/\//)
+    assert.match(provider.entry.apiKeyEnv, /^[A-Z0-9_]+$/)
+    assert.ok(['openai-responses', 'openai-completions'].includes(provider.entry.api), provider.entry.api)
+    assert.ok(provider.entry.models.length > 0)
+    assert.ok(provider.apiKey.length > 8)
+    for (const model of provider.entry.models) {
+      assert.ok(model.id)
+      // pi-ai rejects an empty string spelling; only `off` may travel as null.
+      if (typeof model.reasoningEfforts === 'object') {
+        for (const [level, wire] of Object.entries(model.reasoningEfforts)) {
+          assert.ok(wire === null ? level === 'off' : typeof wire === 'string' && wire !== '', `${provider.route} ${model.id} ${level}`)
+        }
+      }
+    }
+  }
+  const sample = providers[0]
+  console.log(`     sample: ${sample.name} -> ${sample.entry.api} ${sample.entry.baseURL} [${sample.entry.models.map((m) => m.id).join(', ')}]`)
+})
+
+// The state file is shared with the running host; point these checks at a scratch home.
+const realHome = process.env.DSH_HOME
+const tempHome = await mkdtemp(join(tmpdir(), 'cc-switch-bridge-'))
+process.env.DSH_HOME = tempHome
+
+await check('the imported tool groups survive a selection file round trip', async () => {
+  assert.deepEqual(normalizeApps([' Claude ', 'codex', 'codex', '', 7]), ['claude', 'codex'])
+  assert.deepEqual(normalizeApps(undefined), [])
+  const before = await readSelection()
+  assert.equal(before.path, statePath())
+  await writeSelection(['claude', 'codex'], ['CCSWITCH_ROUNDTRIP'])
+  const stored = await readSelection()
+  assert.deepEqual(stored.apps, ['claude', 'codex'])
+  assert.deepEqual(stored.refs, ['CCSWITCH_ROUNDTRIP'])
+  await writeSelection(before.apps, before.refs)
+})
+
+await check('custom client headers from the provider env reach the request', () => {
+  const headers = parseCustomHeaders('user-agent: claude-cli/2.0.60 (external, cli)\nx-app: cli\n\nbad-line\n: novalue')
+  assert.equal(headers['user-agent'], 'claude-cli/2.0.60 (external, cli)')
+  assert.equal(headers['x-app'], 'cli')
+  assert.equal(Object.keys(headers).length, 2)
+})
+
+await check('an empty selection is remembered instead of reverting to the defaults', async () => {
+  const before = await readSelection()
+  await writeSelection([], before.refs)
+  const stored = await readSelection()
+  assert.deepEqual(stored.apps, [], 'an empty saved list must stay empty')
+  await writeSelection(before.apps, before.refs)
+  assert.deepEqual((await readSelection()).apps, before.apps)
+})
+
+await check('drag order survives a selection round trip', async () => {
+  const before = await readSelection()
+  await writeSelection(['claude'], [], ['ccswitch-b', 'ccswitch-a'])
+  assert.deepEqual((await readSelection()).order, ['ccswitch-b', 'ccswitch-a'])
+  // Unlisted routes keep their old relative position behind the listed ones.
+  assert.deepEqual(reorder([{ route: 'a' }, { route: 'b' }, { route: 'c' }], ['c', 'a']).map((item) => item.route), ['c', 'a', 'b'])
+  await writeSelection(before.apps, before.refs, before.order)
+})
+
+await check('a selection write keeps the managed credential refs', async () => {
+  const before = await readSelection()
+  await writeSelection(before.apps, ['CCSWITCH_CODEX_TEST'])
+  assert.deepEqual((await readSelection()).refs, ['CCSWITCH_CODEX_TEST'])
+  await writeSelection(before.apps, before.refs)
+  assert.deepEqual((await readSelection()).refs, before.refs)
+})
+if (realHome === undefined) delete process.env.DSH_HOME
+else process.env.DSH_HOME = realHome
+await rm(tempHome, { recursive: true, force: true })
+
+

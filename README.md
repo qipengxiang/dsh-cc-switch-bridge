@@ -15,7 +15,8 @@ id and give the context window), plus the row name as the group title. Rows are 
 on every model-picker open, so edits made in cc-switch show up without restarting Harness.
 
 Rows whose `meta.apiFormat` is anything but `anthropic`, or without a base URL / credential / model,
-are skipped and logged. Codex/pi/opencode rows use other wire formats and are not bridged.
+are skipped and logged. Codex rows are imported through the built-in pi-ai adapter instead (see
+Settings page); pi/opencode/gemini rows use wire formats nothing in Harness speaks and stay unbridged.
 
 ## What it registers
 
@@ -58,10 +59,36 @@ the signature that comes with a thinking block, so a replayed turn has none:
 Listing a host in that exclusion list is the one line to edit in `lib/thinking.js`, and the plugin
 config `thinking: false` drops every effort menu.
 
+## Settings page
+
+Settings → **cc-switch-bridge** lists the tool groups your cc-switch actually has configured
+(Claude Code, Claude Code Desktop, Codex, …) and imports the ones you tick. Changing the selection
+re-syncs immediately — no restart — and the model picker follows.
+
+| Group | How it is imported |
+| --- | --- |
+| Claude Code / Claude Code Desktop / any Anthropic-format group | the bridge's own adapter, one route per provider |
+| Codex | handed to the built-in `dsh-llm-pi-ai` adapter: one provider per cc-switch Codex row, `api` taken from the row's `wire_api` (`openai-responses` / `openai-completions`), base URL and model catalog straight from the row |
+| pi / opencode / anything else | listed as not importable, cannot be ticked |
+
+The Codex handoff needs no manual setup: turning it on writes a `codex` entry into the `dsh-llm-pi-ai`
+plugin config in the desktop profile patch (`settingsNs: codex`) and stores each row's key in the
+credential store under `CCSWITCH_CODEX_<row>`. Turning it off again removes both the routes and the
+secrets the bridge wrote.
+
+The page itself is a browser half (`client.js`) served by this package and talks to the host over
+`/dsh-cc-switch/state` (GET snapshot, POST `{apps: [...]}` selection).
+
 ## Status file
 
 `~/.dsh/dsh-cc-switch-bridge.status.json` — written after each successful sync: which routes and models
 the host process actually holds. First place to look when a provider is missing from the picker.
+
+## Ordering
+
+The bridged and pi-ai rows can be dragged to reorder them; the saved order (`order` in the state
+file) is the order the routes are registered in, so it is what the model picker shows. The
+DeepSeek account/official groups stay pinned first because the picker does that itself.
 
 ## After editing this plugin
 
@@ -71,11 +98,26 @@ plugin off and on in Settings → Plugins (or restart the app).
 ## Checks
 
 `node tests/smoke.mjs` — SSE decoding, error mapping, tool-call repair, max_tokens clamping, model
-labels, and a read of the real cc-switch database.
+labels, ordering, and a read of the real cc-switch database.
+`node tests/client-render.mjs` — renders the settings page against a stub React, which catches the
+hook-order regression that blanks the page inside the app.
+
+## Tested models
+
+`tests/MATRIX.md` — every bridged claude and codex model (26 provider groups, 91 models) called
+live: tool call, tool round trip, thinking level, image. The short version: tool calls work
+everywhere except gateways that gate on the Claude Code client, GLM's Anthropic endpoint cannot be
+trusted with images, and quota/capacity errors are reported verbatim.
 
 ## Limits
 
-- Anthropic-compatible endpoints only; other cc-switch apps' wire formats are not converted.
-- No image blocks are sent; images in history become a text placeholder.
+- Anthropic-compatible groups are converted by the bridge; Codex groups work because the built-in
+  pi-ai adapter already speaks their wire format. pi/opencode/gemini rows are still not bridged.
+- Some relays whitelist the calling client by User-Agent (`client_not_allowed`, `仅可用于CC官方客户端`).
+  The bridge does not guess a client identity; if the cc-switch row carries
+  `ANTHROPIC_CUSTOM_HEADERS` ("Name: value" lines, as Claude Code accepts it), those headers are
+  forwarded as-is.
+- Image blocks are forwarded when the harness hands over a data URL (`data:image/...`); any other
+  attachment reference becomes a text placeholder.
 - The bridge never writes to cc-switch, so the "current provider" in cc-switch and the model chosen
   in Harness are independent.
