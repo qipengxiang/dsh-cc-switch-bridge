@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-cc-switch-bridge
+      name: 'dsh-cc-switch-bridge'
+      config: {}
